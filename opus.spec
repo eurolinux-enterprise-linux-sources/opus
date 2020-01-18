@@ -1,6 +1,6 @@
 Name:          opus
 Version:       1.0.2
-Release:       4%{?dist}
+Release:       6%{?dist}
 Summary:       An audio codec for use in low-delay speech and audio communication
 
 Group:         System Environment/Libraries
@@ -69,6 +69,12 @@ rm -rf %{buildroot}
 %{_datadir}/aclocal/opus.m4
 
 %changelog
+* Fri Jan 24 2014 Daniel Mach <dmach@redhat.com> - 1.0.2-6
+- Mass rebuild 2014-01-24
+
+* Fri Dec 27 2013 Daniel Mach <dmach@redhat.com> - 1.0.2-5
+- Mass rebuild 2013-12-27
+
 * Tue Nov  5 2013 Matthias Clasen <mclasen@redhat.com> - 1.0.2-4
 - Apply two crash fixes from upstream
 - Resolves: #1017240
