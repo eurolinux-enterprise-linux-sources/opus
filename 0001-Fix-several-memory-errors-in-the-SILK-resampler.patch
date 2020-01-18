@@ -1,0 +1,120 @@
+From dc58579c2c7e060084554018e9a2e8c25097a255 Mon Sep 17 00:00:00 2001
+From: "Timothy B. Terriberry" <tterribe@xiph.org>
+Date: Wed, 8 May 2013 10:25:52 -0700
+Subject: [PATCH] Fix several memory errors in the SILK resampler.
+
+1) The memcpy's were using sizeof(opus_int32), but the type of the
+    local buffer was opus_int16.
+2) Because the size was wrong, this potentially allowed the source
+    and destination regions of the memcpy overlap.
+   I _believe_ that nSamplesIn is at least fs_in_khZ, which is at
+    least 8.
+   Since RESAMPLER_ORDER_FIR_12 is only 8, I don't think that's a
+    problem once you fix the type size.
+3) The size of the buffer used RESAMPLER_MAX_BATCH_SIZE_IN, but the
+    data stored in it was actually _twice_ the input batch size
+    (nSamplesIn<<1).
+
+Because this never blew up in testing, I suspect that in practice
+ the batch sizes are reasonable enough that none of these things
+ was ever a problem, but proving that seems non-obvious.
+
+This patch just converts the whole thing to use CELT's vararrays.
+This fixes the buffer size problems (since we allocate a buffer
+ with the actual size we use) and gets these large buffers off the
+ stack on devices using the pseudo-stack.
+It also fixes the memcpy problems by changing the sizeof to
+ opus_int16.
+It turns out sFIR, which saved state between calls, was being used
+ elsewhere as opus_int32, so this converts it to a union to make
+ this sharing explicit.
+---
+ silk/resampler_private_IIR_FIR.c  | 14 +++++++++-----
+ silk/resampler_private_down_FIR.c |  4 ++--
+ silk/resampler_structs.h          |  5 ++++-
+ 3 files changed, 15 insertions(+), 8 deletions(-)
+
+diff --git a/silk/resampler_private_IIR_FIR.c b/silk/resampler_private_IIR_FIR.c
+index d9e42ca..2b9602d 100644
+--- a/silk/resampler_private_IIR_FIR.c
++++ b/silk/resampler_private_IIR_FIR.c
+@@ -31,6 +31,7 @@ POSSIBILITY OF SUCH DAMAGE.
+ 
+ #include "SigProc_FIX.h"
+ #include "resampler_private.h"
++#include "stack_alloc.h"
+ 
+ static inline opus_int16 *silk_resampler_private_IIR_FIR_INTERPOL(
+     opus_int16  *out,
+@@ -71,10 +72,13 @@ void silk_resampler_private_IIR_FIR(
+     silk_resampler_state_struct *S = (silk_resampler_state_struct *)SS;
+     opus_int32 nSamplesIn;
+     opus_int32 max_index_Q16, index_increment_Q16;
+-    opus_int16 buf[ RESAMPLER_MAX_BATCH_SIZE_IN + RESAMPLER_ORDER_FIR_12 ];
++    VARDECL( opus_int16, buf );
++    SAVE_STACK;
++
++    ALLOC( buf, 2 * S->batchSize + RESAMPLER_ORDER_FIR_12, opus_int16 );
+ 
+     /* Copy buffered samples to start of buffer */
+-    silk_memcpy( buf, S->sFIR, RESAMPLER_ORDER_FIR_12 * sizeof( opus_int32 ) );
++    silk_memcpy( buf, S->sFIR.i16, RESAMPLER_ORDER_FIR_12 * sizeof( opus_int16 ) );
+ 
+     /* Iterate over blocks of frameSizeIn input samples */
+     index_increment_Q16 = S->invRatio_Q16;
+@@ -91,13 +95,13 @@ void silk_resampler_private_IIR_FIR(
+ 
+         if( inLen > 0 ) {
+             /* More iterations to do; copy last part of filtered signal to beginning of buffer */
+-            silk_memcpy( buf, &buf[ nSamplesIn << 1 ], RESAMPLER_ORDER_FIR_12 * sizeof( opus_int32 ) );
++            silk_memcpy( buf, &buf[ nSamplesIn << 1 ], RESAMPLER_ORDER_FIR_12 * sizeof( opus_int16 ) );
+         } else {
+             break;
+         }
+     }
+ 
+     /* Copy last part of filtered signal to the state for the next call */
+-    silk_memcpy( S->sFIR, &buf[ nSamplesIn << 1 ], RESAMPLER_ORDER_FIR_12 * sizeof( opus_int32 ) );
++    silk_memcpy( S->sFIR.i16, &buf[ nSamplesIn << 1 ], RESAMPLER_ORDER_FIR_12 * sizeof( opus_int16 ) );
++    RESTORE_STACK;
+ }
+-
+diff --git a/silk/resampler_private_down_FIR.c b/silk/resampler_private_down_FIR.c
+index 5d24564..8bedb0d 100644
+--- a/silk/resampler_private_down_FIR.c
++++ b/silk/resampler_private_down_FIR.c
+@@ -155,7 +155,7 @@ void silk_resampler_private_down_FIR(
+     const opus_int16 *FIR_Coefs;
+ 
+     /* Copy buffered samples to start of buffer */
+-    silk_memcpy( buf, S->sFIR, S->FIR_Order * sizeof( opus_int32 ) );
++    silk_memcpy( buf, S->sFIR.i32, S->FIR_Order * sizeof( opus_int32 ) );
+ 
+     FIR_Coefs = &S->Coefs[ 2 ];
+ 
+@@ -185,5 +185,5 @@ void silk_resampler_private_down_FIR(
+     }
+ 
+     /* Copy last part of filtered signal to the state for the next call */
+-    silk_memcpy( S->sFIR, &buf[ nSamplesIn ], S->FIR_Order * sizeof( opus_int32 ) );
++    silk_memcpy( S->sFIR.i32, &buf[ nSamplesIn ], S->FIR_Order * sizeof( opus_int32 ) );
+ }
+diff --git a/silk/resampler_structs.h b/silk/resampler_structs.h
+index 4c28bd0..d1a0b95 100644
+--- a/silk/resampler_structs.h
++++ b/silk/resampler_structs.h
+@@ -37,7 +37,10 @@ extern "C" {
+ 
+ typedef struct _silk_resampler_state_struct{
+     opus_int32       sIIR[ SILK_RESAMPLER_MAX_IIR_ORDER ]; /* this must be the first element of this struct */
+-    opus_int32       sFIR[ SILK_RESAMPLER_MAX_FIR_ORDER ];
++    union{
++        opus_int32   i32[ SILK_RESAMPLER_MAX_FIR_ORDER ];
++        opus_int16   i16[ SILK_RESAMPLER_MAX_FIR_ORDER ];
++    }                sFIR;
+     opus_int16       delayBuf[ 48 ];
+     opus_int         resampler_function;
+     opus_int         batchSize;
+-- 
+1.8.4.2
+

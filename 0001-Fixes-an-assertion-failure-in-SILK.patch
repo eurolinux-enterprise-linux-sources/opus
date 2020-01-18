@@ -1,0 +1,74 @@
+From ac76b1503f759201f03dc6acb7bf00bd39f560d3 Mon Sep 17 00:00:00 2001
+From: Jean-Marc Valin <jmvalin@jmvalin.ca>
+Date: Thu, 9 May 2013 16:17:13 -0400
+Subject: [PATCH] Fixes an assertion failure in SILK
+
+We stop the schur recursion before any reflection coefficient
+goes outside of ]-1,1[ and we force reporting a residual energy
+of at least 1.
+Assertion was:
+Fatal (internal) error in ../silk/fixed/noise_shape_analysis_FIX.c, line 290: assertion failed: nrg >= 0
+triggered by:
+opus_demo voip 16000 1 12500 -bandwidth WB -complexity 10 pl04f087.stp-crash out.pcm
+---
+ silk/fixed/schur64_FIX.c | 11 ++++++++++-
+ silk/fixed/schur_FIX.c   | 10 +++++++++-
+ 2 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/silk/fixed/schur64_FIX.c b/silk/fixed/schur64_FIX.c
+index 5ff2756..c75f96a 100644
+--- a/silk/fixed/schur64_FIX.c
++++ b/silk/fixed/schur64_FIX.c
+@@ -56,6 +56,11 @@ opus_int32 silk_schur64(                            /* O    returns residual ene
+     }
+ 
+     for( k = 0; k < order; k++ ) {
++        /* Check that we won't be getting an unstable rc, otherwise stop here. */
++        if (silk_abs_int32(C[ k + 1 ][ 0 ]) >= C[ 0 ][ 1 ]) {
++           break;
++        }
++
+         /* Get reflection coefficient: divide two Q30 values and get result in Q31 */
+         rc_tmp_Q31 = silk_DIV32_varQ( -C[ k + 1 ][ 0 ], C[ 0 ][ 1 ], 31 );
+ 
+@@ -73,5 +78,9 @@ opus_int32 silk_schur64(                            /* O    returns residual ene
+         }
+     }
+ 
+-    return( C[ 0 ][ 1 ] );
++    for(; k < order; k++ ) {
++       rc_Q16[ k ] = 0;
++    }
++
++    return silk_max_32( 1, C[ 0 ][ 1 ] );
+ }
+diff --git a/silk/fixed/schur_FIX.c b/silk/fixed/schur_FIX.c
+index 43db501..788ad3f 100644
+--- a/silk/fixed/schur_FIX.c
++++ b/silk/fixed/schur_FIX.c
+@@ -68,6 +68,10 @@ opus_int32 silk_schur(                              /* O    Returns residual ene
+     }
+ 
+     for( k = 0; k < order; k++ ) {
++        /* Check that we won't be getting an unstable rc, otherwise stop here. */
++        if (silk_abs_int32(C[ k + 1 ][ 0 ]) >= C[ 0 ][ 1 ]) {
++           break;
++        }
+ 
+         /* Get reflection coefficient */
+         rc_tmp_Q15 = -silk_DIV32_16( C[ k + 1 ][ 0 ], silk_max_32( silk_RSHIFT( C[ 0 ][ 1 ], 15 ), 1 ) );
+@@ -87,6 +91,10 @@ opus_int32 silk_schur(                              /* O    Returns residual ene
+         }
+     }
+ 
++    for(; k < order; k++ ) {
++       rc_Q15[ k ] = 0;
++    }
++
+     /* return residual energy */
+-    return C[ 0 ][ 1 ];
++    return silk_max_32( 1, C[ 0 ][ 1 ] );
+ }
+-- 
+1.8.4.2
+
